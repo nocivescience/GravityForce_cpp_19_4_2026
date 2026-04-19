@@ -1,17 +1,18 @@
 #include <SFML/Graphics.hpp>
 #include <vector>
 #include <cmath>
+#include <iostream>
 
 const float G = 9.81f;
 const float RHO_AIRE = 1.225f;
 const float RHO_AGUA = 1000.0f;
-const float ESCALA = 100.0f; // 100px = 1 metro
+const float ESCALA = 100.0f; 
 
 struct Cuerpo {
     sf::CircleShape shape;
     sf::Vector2f vel{0, 0};
     float radioMetros;
-    float densidadObjeto; // kg/m^3 (Acero: 7800, Madera: 600, Aluminio: 2700)
+    float densidadObjeto;
     float masa;
     float volumen;
 
@@ -27,44 +28,64 @@ struct Cuerpo {
         shape.setPosition(pos);
     }
 
-    void actualizar(float dt, float nivelAgua) {
+    void actualizar(float dt, float nivelAgua, float alturaVentana) {
         bool enAgua = (shape.getPosition().y > nivelAgua);
         float rhoFluido = enAgua ? RHO_AGUA : RHO_AIRE;
 
-        // 1. Peso (hacia abajo)
+        // --- FÍSICA DE CAÍDA ---
         float peso = masa * G;
-
-        // 2. Empuje de Arquímedes (hacia arriba)
-        // Solo depende del volumen sumergido y la densidad del fluido
         float empuje = rhoFluido * volumen * G;
+        float area = 3.1415f * (radioMetros * radioMetros);
+        float vY_metros = vel.y / ESCALA;
+        float Cd = 0.47f;
+        
+        // Fuerza de arrastre (siempre opuesta a la velocidad)
+        float fArrastre = 0.5f * rhoFluido * (vY_metros * vY_metros) * Cd * area;
+        if (vel.y > 0) fArrastre = -fArrastre;
 
-        // 3. Arrastre (resistencia al movimiento)
-        float Cd = 0.47f; // Coeficiente para esfera
-        float area = 3.1415f * std::pow(radioMetros, 2);
-        float vY = vel.y / ESCALA;
-        float arrastre = 0.5f * rhoFluido * (vY * vY) * Cd * area;
-        if (vY < 0) arrastre *= -1; // Invertir si sube
-
-        // Fuerza Total y Aceleración
-        float fTotal = peso - empuje - (vel.y > 0 ? arrastre : -arrastre);
+        float fTotal = peso - empuje + (vel.y != 0 ? fArrastre : 0);
         float accY = fTotal / masa;
 
-        vel.y += accY * G * dt; // Aplicamos aceleración
+        vel.y += accY * ESCALA * dt;
         shape.move({0, vel.y * dt});
+
+        // --- LÓGICA DE REBOTE EN EL FONDO ---
+        float limiteInferior = alturaVentana - shape.getRadius();
+        
+        if (shape.getPosition().y > limiteInferior) {
+            // Reposicionar para que no se "entierre" en el suelo
+            shape.setPosition({shape.getPosition().x, limiteInferior});
+
+            // Coeficiente de restitución base (rebote)
+            // En agua rebotan mucho menos (0.2) que en aire (0.7)
+            float e = enAgua ? 0.2f : 0.7f;
+
+            // El tamaño también afecta: esferas más grandes pierden más energía en el fluido
+            // Reducimos el rebote un poco más basándonos en el radio
+            float factorTamano = 1.0f - (radioMetros * 2.0f); 
+            if (factorTamano < 0.1f) factorTamano = 0.1f;
+
+            // Invertir velocidad y aplicar pérdidas
+            vel.y = -vel.y * e * factorTamano;
+
+            // Umbral de parada: si la velocidad es muy baja, detener para evitar micro-rebotes
+            if (std::abs(vel.y) < 10.0f) vel.y = 0;
+        }
     }
 };
 
 int main() {
-    sf::RenderWindow window(sf::VideoMode({800, 800}), "Simulador de Densidades SFML 3");
+    // SFML 3 usa sf::VideoMode({ancho, alto})
+    sf::RenderWindow window(sf::VideoMode({800, 800}), "Simulador de Rebote en Fluidos");
     sf::Clock clock;
 
-    float nivelAgua = 400.f;
+    float nivelAgua = 450.f;
     std::vector<Cuerpo> esferas;
 
-    // Diferentes materiales (Radio px, Densidad kg/m3, Color, Posición)
-    esferas.emplace_back(20, 7800, sf::Color::Red,    sf::Vector2f(200, 50)); // Acero (Cae rápido siempre)
-    esferas.emplace_back(25, 2700, sf::Color::Cyan,   sf::Vector2f(400, 50)); // Aluminio (Se frena notablemente)
-    esferas.emplace_back(30, 1100, sf::Color::Yellow, sf::Vector2f(600, 50)); // Casi agua (Cae muy lento en líquido)
+    // 1. Acero (Pequeña, muy densa) -> Rebota un poco más en el fondo del agua
+    esferas.push_back(Cuerpo(15.f, 7800.f, sf::Color::Red,    sf::Vector2f({200.f, 50.f})));
+    esferas.push_back(Cuerpo(30.f, 1200.f, sf::Color::Yellow, sf::Vector2f({400.f, 50.f})));
+    esferas.push_back(Cuerpo(45.f, 2700.f, sf::Color::Cyan,   sf::Vector2f({600.f, 50.f})));
 
     while (window.isOpen()) {
         while (const auto event = window.pollEvent()) {
@@ -72,21 +93,22 @@ int main() {
         }
 
         float dt = clock.restart().asSeconds();
-        if (dt > 0.1f) dt = 0.1f; // Evitar saltos por lag
+        if (dt > 0.02f) dt = 0.02f; // Limitar DT para estabilidad física
 
-        window.clear(sf::Color(30, 30, 30));
+        window.clear(sf::Color(20, 20, 25));
 
         // Dibujar Agua
-        sf::RectangleShape rectAgua({800, 400});
+        sf::RectangleShape rectAgua({800, 350});
         rectAgua.setPosition({0, nivelAgua});
-        rectAgua.setFillColor(sf::Color(0, 0, 255, 80));
+        rectAgua.setFillColor(sf::Color(0, 80, 255, 100));
         window.draw(rectAgua);
 
         for (auto& e : esferas) {
-            e.actualizar(dt, nivelAgua);
+            e.actualizar(dt, nivelAgua, 800.f);
             window.draw(e.shape);
         }
 
         window.display();
     }
+    return 0;
 }
